@@ -3,7 +3,8 @@ import { MeshGradient } from "@paper-design/shaders-react"
 import { MotionConfig, motion } from "motion/react"
 import { Badge } from "@/components/ui/badge"
 import { CollisionPopover } from "@/components/collision-popover"
-import { FloatingDock, type DockItem } from "@/components/floating-dock"
+import { Navbar, type NavItem } from "@/components/navbar"
+import { useDevice } from "@/hooks/use-device"
 import {
   supportsScrollTimeline,
   useActiveSection,
@@ -40,7 +41,7 @@ function paletteFor(hour: number, dark: boolean): Palette {
 const ENGINE = engineName()
 const GPU = gpuRenderer()
 
-const SECTIONS: DockItem[] = [
+const SECTIONS: NavItem[] = [
   { id: "top", label: "Top" },
   { id: "chrome", label: "Chrome" },
   { id: "stack", label: "Stack" },
@@ -67,6 +68,7 @@ export default function App() {
   const flags = useMediaFlags()
   const viewport = useViewport()
   const chrome = useViewportChrome()
+  const device = useDevice()
   const scroll = useScrollState()
   const online = useOnline()
   const connection = useConnection()
@@ -81,7 +83,7 @@ export default function App() {
   const palette = paletteFor(hour, flags.darkScheme)
   const lightUi = !flags.darkScheme && palette.name === "day"
   const glass = supportsBackdropFilter && !flags.reducedTransparency
-  const coarse = !flags.finePointer
+  const railMode = device.navMode === "rail"
 
   const ink = lightUi ? "text-slate-900" : "text-white"
   const inkSoft = lightUi ? "text-slate-700" : "text-white/70"
@@ -115,10 +117,35 @@ export default function App() {
       ? "bg-white"
       : "bg-slate-900"
 
-  // The dock retreats while reading downward and returns on any upward intent.
-  const dockHidden = scroll.direction === "down" && !scroll.atTop && !scroll.atBottom
+  // Floating navigation retreats while reading downward, returns on upward intent.
+  const navHidden = scroll.direction === "down" && !scroll.atTop && !scroll.atBottom
+
+  const goToSection = (id: string) =>
+    document.getElementById(id)?.scrollIntoView({
+      behavior: flags.reducedMotion ? "auto" : "smooth",
+      block: "start",
+    })
 
   const signals: [string, string][] = [
+    ["device class", device.kind],
+    ["nav form", `${device.navMode} (${device.orientation})`],
+    ["primary input", device.touch ? "touch" : "pointer"],
+    [
+      "touch points",
+      device.maxTouchPoints > 0 ? String(device.maxTouchPoints) : "none",
+    ],
+    ["display mode", device.standalone ? "standalone" : "browser tab"],
+    [
+      "viewport segments",
+      device.spanned
+        ? `${device.segments.horizontal}×${device.segments.vertical} (spanned)`
+        : "single",
+    ],
+    ["ua platform", device.platform ?? "not exposed"],
+    [
+      "ua mobile hint",
+      device.uaMobile === null ? "not exposed" : String(device.uaMobile),
+    ],
     ["engine", ENGINE],
     ["gpu", GPU ? GPU.split(",")[0].slice(0, 36) : "n/a"],
     ["viewport", `${viewport.width}×${viewport.height} @ ${viewport.dpr}x`],
@@ -194,8 +221,20 @@ export default function App() {
             >
               web studio
             </span>
+            {device.navMode === "top" && (
+              <Navbar
+                items={SECTIONS}
+                active={active}
+                hidden={false}
+                device={device}
+                chrome={chrome}
+                glass={glass}
+                lightUi={lightUi}
+                onSelect={goToSection}
+              />
+            )}
             <span className={`font-mono text-xs ${inkFaint}`}>
-              {stuck ? `${Math.round(scroll.progress * 100)}%` : "scroll"}
+              {stuck ? `${Math.round(scroll.progress * 100)}%` : device.kind}
             </span>
           </div>
           <div className={`h-px w-full ${lightUi ? "bg-slate-900/10" : "bg-white/10"}`}>
@@ -211,7 +250,11 @@ export default function App() {
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-5xl px-6 pb-40">
+        {/* The rail occupies the leading edge, so the content yields that space. */}
+        <main
+          className="mx-auto w-full max-w-5xl px-6 pb-40"
+          style={railMode ? { paddingLeft: chrome.safeLeft + 168 } : undefined}
+        >
           <Section id="top" first>
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -226,10 +269,11 @@ export default function App() {
                 Elements that know where the edge is.
               </h1>
               <p className={`mt-5 max-w-xl text-lg ${inkSoft}`}>
-                The bar above condenses once it sticks. The dock below retreats
-                when you read downward and comes back the moment you scroll up,
-                and it lifts itself over the home indicator and the on-screen
-                keyboard rather than sitting under them.
+                The navigation changes shape with the device: an inline bar for
+                a pointer, a dock in the thumb zone for a phone held upright,
+                and a rail when that phone turns on its side and vertical space
+                becomes the scarce resource. It is classified from input
+                capability, never from a user agent string.
               </p>
               <div className="mt-6 flex flex-wrap gap-2">
                 <Badge
@@ -245,7 +289,7 @@ export default function App() {
                     : "static chrome"}
                 </Badge>
                 <Badge variant="outline" className={`${border} ${inkSoft}`}>
-                  {coarse ? "thumb-zone dock" : "pointer dock"}
+                  {device.kind} · {device.navMode} nav
                 </Badge>
               </div>
             </motion.div>
@@ -349,21 +393,18 @@ export default function App() {
           </Section>
         </main>
 
-        <FloatingDock
-          items={SECTIONS}
-          active={active}
-          hidden={dockHidden}
-          chrome={chrome}
-          coarse={coarse}
-          glass={glass}
-          lightUi={lightUi}
-          onSelect={(id) =>
-            document.getElementById(id)?.scrollIntoView({
-              behavior: flags.reducedMotion ? "auto" : "smooth",
-              block: "start",
-            })
-          }
-        />
+        {device.navMode !== "top" && (
+          <Navbar
+            items={SECTIONS}
+            active={active}
+            hidden={navHidden}
+            device={device}
+            chrome={chrome}
+            glass={glass}
+            lightUi={lightUi}
+            onSelect={goToSection}
+          />
+        )}
       </div>
     </MotionConfig>
   )

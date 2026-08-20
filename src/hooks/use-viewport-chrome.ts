@@ -22,6 +22,9 @@ export interface ViewportChrome {
   /** Bottom safe-area inset (home indicator, gesture bar). */
   safeBottom: number
   safeTop: number
+  /** Side insets, non-zero on a notched phone held in landscape. */
+  safeLeft: number
+  safeRight: number
 }
 
 /** Measures `100svh` / `100lvh` / `100dvh` with an off-screen probe element. */
@@ -47,12 +50,15 @@ function safeAreaInsets() {
   const probe = document.createElement("div")
   probe.style.cssText =
     "position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;" +
-    "padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)"
+    "padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);" +
+    "padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)"
   document.body.appendChild(probe)
   const style = getComputedStyle(probe)
   const insets = {
     safeTop: parseFloat(style.paddingTop) || 0,
     safeBottom: parseFloat(style.paddingBottom) || 0,
+    safeLeft: parseFloat(style.paddingLeft) || 0,
+    safeRight: parseFloat(style.paddingRight) || 0,
   }
   probe.remove()
   return insets
