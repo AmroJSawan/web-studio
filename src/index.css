@@ -128,3 +128,52 @@
     @apply font-sans;
     }
 }
+/* --- Viewport-aware scroll layer ------------------------------------- */
+
+@keyframes scroll-progress-grow {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+@keyframes section-reveal {
+  from { opacity: 0; transform: translateY(28px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/*
+ * Where scroll-driven timelines are supported (Chromium 115+, Safari 18+)
+ * these run on the compositor, off the main thread. Firefox still keeps them
+ * behind a flag, so JS drives the same values there instead.
+ */
+@supports (animation-timeline: scroll()) {
+  .scroll-progress-bar {
+    transform-origin: 0 50%;
+    animation: scroll-progress-grow linear forwards;
+    animation-timeline: scroll(root block);
+  }
+
+  .reveal-on-view {
+    animation: section-reveal linear both;
+    animation-timeline: view(block);
+    animation-range: entry 5% cover 28%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scroll-progress-bar,
+  .reveal-on-view {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Sticky headers must not slide under a scroll-snap boundary. */
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}

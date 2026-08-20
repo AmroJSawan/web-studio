@@ -1,7 +1,16 @@
-import { useEffect, useRef } from "react"
+import { useMemo, useState, type ReactNode } from "react"
 import { MeshGradient } from "@paper-design/shaders-react"
-import { motion, MotionConfig } from "motion/react"
+import { MotionConfig, motion } from "motion/react"
 import { Badge } from "@/components/ui/badge"
+import { CollisionPopover } from "@/components/collision-popover"
+import { FloatingDock, type DockItem } from "@/components/floating-dock"
+import {
+  supportsScrollTimeline,
+  useActiveSection,
+  useScrollState,
+  useStuck,
+} from "@/hooks/use-scroll-state"
+import { useViewportChrome } from "@/hooks/use-viewport-chrome"
 import {
   engineName,
   gpuRenderer,
@@ -31,41 +40,48 @@ function paletteFor(hour: number, dark: boolean): Palette {
 const ENGINE = engineName()
 const GPU = gpuRenderer()
 
+const SECTIONS: DockItem[] = [
+  { id: "top", label: "Top" },
+  { id: "chrome", label: "Chrome" },
+  { id: "stack", label: "Stack" },
+  { id: "float", label: "Float" },
+  { id: "signals", label: "Signals" },
+]
+
+const STACK_CARDS = [
+  {
+    title: "Sticky is a contract with the viewport",
+    body: "Each header parks at its own offset, so the ones above stay legible instead of being overwritten. The offsets are computed from the bar height, not hard-coded magic numbers.",
+  },
+  {
+    title: "Stacking survives a collapsing toolbar",
+    body: "Mobile browsers retract the address bar as you scroll, which changes the viewport height mid-gesture. Offsets measured in rem against a fixed bar stay stable through that.",
+  },
+  {
+    title: "The last card holds the floor",
+    body: "When the section scrolls past, the stack releases in order. No layout shift, no jump: sticky positioning never removes an element from flow.",
+  },
+]
+
 export default function App() {
   const flags = useMediaFlags()
   const viewport = useViewport()
+  const chrome = useViewportChrome()
+  const scroll = useScrollState()
   const online = useOnline()
   const connection = useConnection()
   const battery = useBattery()
   const hour = useLocalHour()
 
+  const sectionIds = useMemo(() => SECTIONS.map((s) => s.id), [])
+  const active = useActiveSection(sectionIds)
+  const { sentinelRef, stuck } = useStuck(0)
+  const [keyboardProbe, setKeyboardProbe] = useState("")
+
   const palette = paletteFor(hour, flags.darkScheme)
   const lightUi = !flags.darkScheme && palette.name === "day"
   const glass = supportsBackdropFilter && !flags.reducedTransparency
-  const trackCursor = flags.canHover && flags.finePointer && !flags.reducedMotion
-
-  const panelRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const onVisibility = () => {
-      document.title = document.hidden ? "Web Studio · idle" : "Web Studio"
-    }
-    document.addEventListener("visibilitychange", onVisibility)
-    return () => document.removeEventListener("visibilitychange", onVisibility)
-  }, [])
-
-  useEffect(() => {
-    if (!trackCursor) return
-    const onMove = (e: PointerEvent) => {
-      const el = panelRef.current
-      if (!el) return
-      const rect = el.getBoundingClientRect()
-      el.style.setProperty("--mx", `${e.clientX - rect.left}px`)
-      el.style.setProperty("--my", `${e.clientY - rect.top}px`)
-    }
-    window.addEventListener("pointermove", onMove)
-    return () => window.removeEventListener("pointermove", onMove)
-  }, [trackCursor])
+  const coarse = !flags.finePointer
 
   const ink = lightUi ? "text-slate-900" : "text-white"
   const inkSoft = lightUi ? "text-slate-700" : "text-white/70"
@@ -79,14 +95,28 @@ export default function App() {
       : "border-white/15"
   const surface = glass
     ? lightUi
-      ? "bg-white/40 backdrop-blur-2xl"
-      : "bg-white/10 backdrop-blur-2xl"
+      ? "bg-white/45 backdrop-blur-2xl"
+      : "bg-white/8 backdrop-blur-2xl"
     : lightUi
       ? "bg-white"
       : "bg-slate-900"
-  const accent = flags.p3Gamut
-    ? "color(display-p3 0.2 0.85 0.75)"
-    : "#2dd4bf"
+  const accent = flags.p3Gamut ? "color(display-p3 0.2 0.85 0.75)" : "#2dd4bf"
+
+  /*
+   * Stacked sticky cards sit on top of each other, not on the shader, so they
+   * need enough opacity to occlude the card beneath. The lighter `surface`
+   * tint would let the previous card's text read through.
+   */
+  const stackSurface = glass
+    ? lightUi
+      ? "bg-white/90 backdrop-blur-2xl"
+      : "bg-slate-950/90 backdrop-blur-2xl"
+    : lightUi
+      ? "bg-white"
+      : "bg-slate-900"
+
+  // The dock retreats while reading downward and returns on any upward intent.
+  const dockHidden = scroll.direction === "down" && !scroll.atTop && !scroll.atBottom
 
   const signals: [string, string][] = [
     ["engine", ENGINE],
@@ -98,9 +128,9 @@ export default function App() {
     ["dynamic range", flags.hdr ? "high" : "standard"],
     ["contrast", flags.moreContrast ? "more" : "default"],
     ["pointer", flags.finePointer ? "fine" : "coarse"],
-    ["hover", flags.canHover ? "available" : "none"],
     ["motion", flags.reducedMotion ? "reduced" : "full"],
-    ["transparency", !glass ? "solid fallback" : "glass"],
+    ["transparency", glass ? "glass" : "solid fallback"],
+    ["scroll timeline", supportsScrollTimeline ? "native css" : "js fallback"],
     [
       "network",
       online
@@ -115,88 +145,309 @@ export default function App() {
         ? `${Math.round(battery.level * 100)}%${battery.charging ? " · charging" : ""}`
         : "n/a",
     ],
-    ["cpu threads", String(navigator.hardwareConcurrency ?? "n/a")],
     ["locale", navigator.language],
     ["timezone", Intl.DateTimeFormat().resolvedOptions().timeZone],
     ["scene", `${palette.name} (${hour}:00 local)`],
   ]
 
+  const chromeRows: [string, string][] = [
+    ["small (100svh)", `${Math.round(chrome.small)}px`],
+    ["large (100lvh)", `${Math.round(chrome.large)}px`],
+    ["dynamic (100dvh)", `${Math.round(chrome.dynamic)}px`],
+    ["layout (100vh)", `${Math.round(chrome.layoutHeight)}px`],
+    ["visual viewport", `${Math.round(chrome.visualHeight)}px`],
+    ["collapsing chrome", `${chrome.chromeHeight}px`],
+    ["keyboard inset", `${chrome.keyboardInset}px`],
+    ["safe area top", `${Math.round(chrome.safeTop)}px`],
+    ["safe area bottom", `${Math.round(chrome.safeBottom)}px`],
+    ["pinch scale", chrome.scale.toFixed(2)],
+    ["scroll progress", `${Math.round(scroll.progress * 100)}%`],
+    ["direction", scroll.direction],
+  ]
+
   return (
     <MotionConfig reducedMotion="user">
-      <main className={`relative min-h-svh overflow-hidden ${ink}`}>
+      <div className={`relative ${ink}`}>
         <MeshGradient
-          className="absolute inset-0 h-full w-full"
+          className="fixed inset-0 -z-10 h-full w-full"
           colors={palette.colors}
           speed={flags.reducedMotion ? 0 : 0.4}
         />
-        <div
-          className={`relative z-10 mx-auto flex min-h-svh w-full max-w-5xl flex-col items-stretch justify-center gap-6 p-6 md:flex-row md:items-center ${flags.finePointer ? "" : "gap-8 p-8"}`}
-        >
-          <motion.section
-            ref={panelRef}
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, ease: [0.22, 1, 0.36, 1] }}
-            className={`relative flex-1 overflow-hidden rounded-3xl border p-8 shadow-2xl shadow-black/30 md:p-10 ${border} ${surface}`}
-          >
-            {trackCursor && (
-              <div
-                aria-hidden
-                className="pointer-events-none absolute inset-0"
-                style={{
-                  background: `radial-gradient(320px circle at var(--mx, 50%) var(--my, 50%), ${lightUi ? "rgba(255,255,255,0.55)" : "rgba(255,255,255,0.08)"}, transparent 70%)`,
-                }}
-              />
-            )}
-            <p className={`text-sm font-medium tracking-widest uppercase ${inkFaint}`}>
-              web studio
-            </p>
-            <h1 className="mt-3 text-4xl font-semibold tracking-tight">
-              This page is reading the room.
-            </h1>
-            <p className={`mt-4 ${inkSoft}`}>
-              The scene palette follows your local hour. Glass falls back to a
-              solid surface when transparency is reduced or unsupported. Motion
-              stops when your system asks for it. Accents use display-P3 only
-              on wide-gamut screens.
-            </p>
-            <div className="mt-6 flex flex-wrap gap-2">
-              <Badge
-                variant="outline"
-                className={border}
-                style={{ color: accent, borderColor: "currentColor" }}
-              >
-                {online ? "online" : "offline"}
-              </Badge>
-              <Badge variant="outline" className={`${border} ${inkSoft}`}>
-                {palette.name} scene
-              </Badge>
-              <Badge variant="outline" className={`${border} ${inkSoft}`}>
-                {glass ? "liquid glass" : "solid surface"}
-              </Badge>
-            </div>
-          </motion.section>
 
-          <motion.aside
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
-            className={`w-full rounded-3xl border p-6 font-mono text-[13px] shadow-2xl shadow-black/30 md:w-80 ${border} ${surface}`}
+        <div ref={sentinelRef} aria-hidden className="absolute top-0 h-px w-full" />
+
+        <header
+          className={`sticky top-0 z-40 border-b transition-all duration-300 ${
+            stuck ? `${border} ${surface}` : "border-transparent"
+          }`}
+          style={{ paddingTop: chrome.safeTop }}
+        >
+          <div
+            className={`mx-auto flex w-full max-w-5xl items-center justify-between px-6 transition-all duration-300 ${
+              stuck ? "py-2.5" : "py-5"
+            }`}
           >
-            <p className={`mb-4 text-xs tracking-widest uppercase ${inkFaint}`}>
-              signals
-            </p>
-            <dl className="space-y-1.5">
-              {signals.map(([label, value]) => (
-                <div key={label} className="flex items-baseline justify-between gap-3">
-                  <dt className={inkFaint}>{label}</dt>
-                  <dd className={`text-right ${inkSoft}`}>{value}</dd>
+            <span
+              className={`font-medium tracking-widest uppercase transition-all duration-300 ${
+                stuck ? "text-xs" : "text-sm"
+              } ${inkFaint}`}
+            >
+              web studio
+            </span>
+            <span className={`font-mono text-xs ${inkFaint}`}>
+              {stuck ? `${Math.round(scroll.progress * 100)}%` : "scroll"}
+            </span>
+          </div>
+          <div className={`h-px w-full ${lightUi ? "bg-slate-900/10" : "bg-white/10"}`}>
+            <div
+              className="scroll-progress-bar h-px w-full origin-left"
+              style={{
+                background: accent,
+                ...(supportsScrollTimeline
+                  ? {}
+                  : { transform: `scaleX(${scroll.progress})` }),
+              }}
+            />
+          </div>
+        </header>
+
+        <main className="mx-auto w-full max-w-5xl px-6 pb-40">
+          <Section id="top" first>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+              className={`rounded-3xl border p-8 shadow-2xl shadow-black/30 md:p-12 ${border} ${surface}`}
+            >
+              <p className={`text-sm font-medium tracking-widest uppercase ${inkFaint}`}>
+                floating &amp; sticky
+              </p>
+              <h1 className="mt-3 max-w-2xl text-4xl font-semibold tracking-tight md:text-5xl">
+                Elements that know where the edge is.
+              </h1>
+              <p className={`mt-5 max-w-xl text-lg ${inkSoft}`}>
+                The bar above condenses once it sticks. The dock below retreats
+                when you read downward and comes back the moment you scroll up,
+                and it lifts itself over the home indicator and the on-screen
+                keyboard rather than sitting under them.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-2">
+                <Badge
+                  variant="outline"
+                  className={border}
+                  style={{ color: accent, borderColor: "currentColor" }}
+                >
+                  {supportsScrollTimeline ? "css scroll timeline" : "js scroll fallback"}
+                </Badge>
+                <Badge variant="outline" className={`${border} ${inkSoft}`}>
+                  {chrome.chromeHeight > 0
+                    ? `${chrome.chromeHeight}px collapsing chrome`
+                    : "static chrome"}
+                </Badge>
+                <Badge variant="outline" className={`${border} ${inkSoft}`}>
+                  {coarse ? "thumb-zone dock" : "pointer dock"}
+                </Badge>
+              </div>
+            </motion.div>
+          </Section>
+
+          <Section id="chrome">
+            <SectionTitle inkFaint={inkFaint}>viewport chrome</SectionTitle>
+            <div className="grid gap-4 md:grid-cols-[1fr_20rem]">
+              <Card border={border} surface={surface}>
+                <h2 className="text-2xl font-semibold tracking-tight">
+                  Measured, not assumed.
+                </h2>
+                <p className={`mt-4 ${inkSoft}`}>
+                  These numbers come from a probe element resolving{" "}
+                  <code className="font-mono text-[0.9em]">100svh</code>,{" "}
+                  <code className="font-mono text-[0.9em]">100lvh</code> and{" "}
+                  <code className="font-mono text-[0.9em]">100dvh</code>, plus the
+                  visual viewport for the live values. The gap between small and
+                  large is exactly how much browser UI slides away as you scroll.
+                </p>
+                <p className={`mt-4 ${inkSoft}`}>
+                  Focus the field to open the on-screen keyboard on a touch
+                  device: the keyboard inset becomes non-zero and the dock rises
+                  to clear it.
+                </p>
+                <input
+                  value={keyboardProbe}
+                  onChange={(e) => setKeyboardProbe(e.target.value)}
+                  placeholder="Focus me to raise the keyboard"
+                  aria-label="Keyboard inset probe"
+                  className={`mt-5 min-h-11 w-full rounded-xl border px-4 text-base outline-none ${border} ${
+                    lightUi
+                      ? "bg-white/60 placeholder:text-slate-400"
+                      : "bg-white/5 placeholder:text-white/30"
+                  }`}
+                />
+              </Card>
+              <Readout rows={chromeRows} border={border} surface={surface} inkFaint={inkFaint} inkSoft={inkSoft} title="live" />
+            </div>
+          </Section>
+
+          <Section id="stack">
+            <SectionTitle inkFaint={inkFaint}>stacking</SectionTitle>
+            <div className="space-y-4">
+              {STACK_CARDS.map((card, i) => (
+                <div
+                  key={card.title}
+                  className={`sticky rounded-3xl border p-7 shadow-2xl shadow-black/40 md:p-9 ${border} ${stackSurface}`}
+                  style={{ top: `${5 + i * 3.5}rem`, zIndex: 10 + i }}
+                >
+                  <p className={`font-mono text-xs ${inkFaint}`}>
+                    0{i + 1} · top {5 + i * 3.5}rem
+                  </p>
+                  <h3 className="mt-2 text-xl font-semibold tracking-tight md:text-2xl">
+                    {card.title}
+                  </h3>
+                  <p className={`mt-3 max-w-2xl ${inkSoft}`}>{card.body}</p>
                 </div>
               ))}
-            </dl>
-          </motion.aside>
-        </div>
-      </main>
+            </div>
+            <div className="h-[12svh]" aria-hidden />
+          </Section>
+
+          <Section id="float">
+            <SectionTitle inkFaint={inkFaint}>collision aware</SectionTitle>
+            <Card border={border} surface={surface}>
+              <h2 className="text-2xl font-semibold tracking-tight">
+                Floating panels that refuse to fall off screen.
+              </h2>
+              <p className={`mt-4 max-w-2xl ${inkSoft}`}>
+                Each panel measures the room left in the visual viewport before
+                it paints, then flips above its trigger or shifts sideways to
+                stay fully visible. Open one and scroll: it re-measures on every
+                frame the viewport changes, including while the mobile toolbar
+                collapses. The current decision is printed inside the panel.
+              </p>
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <CollisionPopover label="Near the left edge" glass={glass} lightUi={lightUi}>
+                  Anchored left. When the panel would overflow the left edge it
+                  shifts right and reports the offset.
+                </CollisionPopover>
+                <span className="flex-1" />
+                <CollisionPopover label="Near the right edge" glass={glass} lightUi={lightUi}>
+                  Anchored right. Same panel, mirrored decision, no separate
+                  code path.
+                </CollisionPopover>
+              </div>
+            </Card>
+          </Section>
+
+          <Section id="signals">
+            <SectionTitle inkFaint={inkFaint}>signals</SectionTitle>
+            <Readout
+              rows={signals}
+              border={border}
+              surface={surface}
+              inkFaint={inkFaint}
+              inkSoft={inkSoft}
+              title="environment"
+            />
+          </Section>
+        </main>
+
+        <FloatingDock
+          items={SECTIONS}
+          active={active}
+          hidden={dockHidden}
+          chrome={chrome}
+          coarse={coarse}
+          glass={glass}
+          lightUi={lightUi}
+          onSelect={(id) =>
+            document.getElementById(id)?.scrollIntoView({
+              behavior: flags.reducedMotion ? "auto" : "smooth",
+              block: "start",
+            })
+          }
+        />
+      </div>
     </MotionConfig>
+  )
+}
+
+function Section({
+  id,
+  children,
+  first,
+}: {
+  id: string
+  children: ReactNode
+  first?: boolean
+}) {
+  return (
+    <section
+      id={id}
+      className={`reveal-on-view scroll-mt-24 ${first ? "pt-8 pb-24" : "py-24"}`}
+    >
+      {children}
+    </section>
+  )
+}
+
+function SectionTitle({
+  children,
+  inkFaint,
+}: {
+  children: ReactNode
+  inkFaint: string
+}) {
+  return (
+    <p className={`mb-4 font-mono text-xs tracking-widest uppercase ${inkFaint}`}>
+      {children}
+    </p>
+  )
+}
+
+function Card({
+  children,
+  border,
+  surface,
+}: {
+  children: ReactNode
+  border: string
+  surface: string
+}) {
+  return (
+    <div
+      className={`rounded-3xl border p-7 shadow-2xl shadow-black/30 md:p-9 ${border} ${surface}`}
+    >
+      {children}
+    </div>
+  )
+}
+
+function Readout({
+  rows,
+  border,
+  surface,
+  inkFaint,
+  inkSoft,
+  title,
+}: {
+  rows: [string, string][]
+  border: string
+  surface: string
+  inkFaint: string
+  inkSoft: string
+  title: string
+}) {
+  return (
+    <aside
+      className={`h-fit rounded-3xl border p-6 font-mono text-[13px] shadow-2xl shadow-black/30 ${border} ${surface}`}
+    >
+      <p className={`mb-4 text-xs tracking-widest uppercase ${inkFaint}`}>{title}</p>
+      <dl className="space-y-1.5">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-3">
+            <dt className={inkFaint}>{label}</dt>
+            <dd className={`text-right ${inkSoft}`}>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </aside>
   )
 }
