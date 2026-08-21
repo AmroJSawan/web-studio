@@ -15,24 +15,33 @@ interface ReelsFeedProps {
   topInset: number
   leftInset: number
   reducedMotion: boolean
+  /** Which viewport edge the browser draws its bar against. */
+  tintEdge: "top" | "bottom"
   onActiveColorChange: (color: string | null) => void
 }
 
-/*
- * Thresholds taken from the two shipping implementations of this gesture
- * rather than invented: Android's ViewPager2 uses a 400 dp/s minimum fling
- * velocity and a 25 dp minimum fling distance, and Swiper treats a swipe
- * under 300 ms as a short swipe that always commits, while a slower one must
- * cross half the slide.
+/**
+ * Above this release speed the gesture reads as scanning and paging engages.
+ * 400 dp/s is Android ViewPager2's MIN_FLING_VELOCITY, and 25 dp its
+ * MIN_DISTANCE_FOR_FLING, which keeps a stray twitch from counting.
  */
 const FLING_VELOCITY = 400
 const MIN_FLING_DISTANCE = 25
-const LONG_SWIPE_MS = 300
-const LONG_SWIPE_RATIO = 0.5
+/**
+ * Wheel deltas are coarser than a finger, so the same number would page on an
+ * ordinary trackpad drag. Tuned here rather than taken from a library.
+ */
+const WHEEL_FLING_VELOCITY = 900
+/** A finger resting this long before lifting is placing the feed, not throwing it. */
+const HOLD_MS = 120
+/** Imperceptible cleanup so a free rest does not sit a few pixels off true. */
+const EDGE_TOLERANCE = 6
+/** Approximates deceleration distance: velocity times this lands where momentum would. */
+const MOMENTUM_SECONDS = 0.325
 /** A wheel or trackpad burst is treated as one gesture once it goes quiet. */
 const WHEEL_IDLE_MS = 90
 
-type Decision = { kind: "flick" | "distance" | "returned"; detail: string } | null
+type Decision = { kind: "paged" | "free"; detail: string } | null
 
 function luminance(hex: string): number {
   const raw = hex.replace("#", "")
@@ -48,25 +57,27 @@ function luminance(hex: string): number {
 export const isDarkColor = (hex: string) => luminance(hex) < 0.4
 
 /**
- * A full-screen feed paged by gesture rather than by CSS scroll snap.
+ * A full-screen feed whose snapping switches itself on and off by reading how
+ * the gesture was made.
  *
- * CSS snapping is positional: it waits for scrolling to stop and then pulls to
- * whichever point is nearest, which is why it can feel like it is correcting
- * you. This reads the gesture instead, the way a native pager does. The track
- * follows the finger one to one, and on release the pace decides:
+ * CSS scroll snap is positional: it waits for scrolling to stop and pulls to
+ * whichever point is nearest, whatever the reader was doing. That is the part
+ * that feels like a hijack, because placing the feed somewhere deliberately
+ * and throwing it to scan are answered identically.
  *
- * - A quick flick commits to the next slide however short it was, as long as
- *   it cleared the minimum distance. Intent, not travel.
- * - A slow drag commits only once it has passed the halfway mark, and springs
- *   back to where it started if it has not.
- * - The settling spring is handed the release velocity, so the slide carries
- *   on at the speed the finger left it at instead of restarting from nothing.
+ * Here the release decides which of the two it was, and only one of them
+ * involves snapping at all:
  *
- * The escapes from the earlier version survive. Wheel gestures at either end
- * are left unhandled so the page scrolls natively, a drag past either end
- * rubber-bands and then hands its travel to the page, and if a slide's content
- * outgrows the screen the whole pager steps aside for an ordinary scroller,
- * since a transform-based pager cannot scroll within a slide.
+ * - Thrown quickly, the gesture reads as scanning, so paging engages and the
+ *   feed lands on the next slide, its spring seeded with the release velocity
+ *   so the movement carries on at the speed the finger left at.
+ * - Dragged slowly, or held still before lifting, the gesture reads as
+ *   placing, so paging stays off and the feed keeps exactly the position it
+ *   was given, carrying only the momentum that was really in it.
+ *
+ * Nothing is ever pulled back to where it started. A partial scroll is a
+ * position, not a failed page turn, and the feed may rest between slides for
+ * as long as the reader wants it there.
  */
 export function ReelsFeed({
   reels,
@@ -76,25 +87,30 @@ export function ReelsFeed({
   topInset,
   leftInset,
   reducedMotion,
+  tintEdge,
   onActiveColorChange,
 }: ReelsFeedProps) {
   const frameRef = useRef<HTMLDivElement>(null)
   const contentRefs = useRef<(HTMLElement | null)[]>([])
   const y = useMotionValue(0)
   const [index, setIndex] = useState(0)
+  const [edgeIndex, setEdgeIndex] = useState(0)
   const [decision, setDecision] = useState<Decision>(null)
   const [contentOverflows, setContentOverflows] = useState(false)
   const [inView, setInView] = useState(false)
-  const dragStart = useRef(0)
+  const lastMoveAt = useRef(0)
   const lastIndex = reels.length - 1
   const slideColor = (i: number) => colors[i % colors.length]
 
   const usePager = !contentOverflows && !reducedMotion
 
-  const settle = useCallback(
+  const bounds = { min: -lastIndex * height, max: 0 }
+  const clampY = (v: number) => Math.max(bounds.min, Math.min(bounds.max, v))
+
+  /** Paging: land on a slide boundary, carrying the release velocity in. */
+  const pageTo = useCallback(
     (target: number, velocity = 0) => {
       const clamped = Math.max(0, Math.min(target, lastIndex))
-      setIndex(clamped)
       animate(y, -clamped * height, {
         type: "spring",
         stiffness: 320,
@@ -107,15 +123,62 @@ export function ReelsFeed({
     [height, lastIndex, y],
   )
 
+  /**
+   * Free settle: no snapping. The feed keeps the position it was handed and
+   * spends whatever momentum was actually in the gesture, which for a slow or
+   * held release is none at all.
+   */
+  const glideTo = useCallback(
+    (velocity: number) => {
+      let target = clampY(y.get() + velocity * MOMENTUM_SECONDS)
+      const nearest = Math.round(target / height) * height
+      if (Math.abs(target - nearest) < EDGE_TOLERANCE) target = nearest
+      animate(y, target, {
+        type: "spring",
+        stiffness: 220,
+        damping: 42,
+        velocity,
+        restDelta: 0.5,
+      })
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [height, y, bounds.min],
+  )
+
   // Keep the track aligned when the viewport, and so the slide height, changes.
   useEffect(() => {
     if (usePager) y.set(-index * height)
-  }, [height, index, usePager, y])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [height])
+
+  // The reported slide is whichever one is nearest, so a rest between two of
+  // them still drives the rail and the browser tint.
+  useEffect(() => {
+    if (!usePager) return
+    const unsubscribe = y.on("change", (v) => {
+      const position = -v / height
+      const nearest = Math.max(0, Math.min(Math.round(position), lastIndex))
+      setIndex((prev) => (prev === nearest ? prev : nearest))
+      /*
+       * Resting between two slides puts a different colour against each edge
+       * of the screen, and the browser only gets one tint. Take it from the
+       * slide covering the edge the browser actually draws its bar against,
+       * so that edge has no seam.
+       */
+      const edge =
+        tintEdge === "bottom"
+          ? Math.ceil(position - 0.001)
+          : Math.floor(position + 0.001)
+      const clampedEdge = Math.max(0, Math.min(edge, lastIndex))
+      setEdgeIndex((prev) => (prev === clampedEdge ? prev : clampedEdge))
+    })
+    return () => unsubscribe()
+  }, [height, lastIndex, tintEdge, usePager, y])
 
   useEffect(() => {
-    onActiveColorChange(inView ? slideColor(index) : null)
+    onActiveColorChange(inView ? slideColor(edgeIndex) : null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inView, index, onActiveColorChange, colors])
+  }, [inView, edgeIndex, onActiveColorChange, colors])
 
   useEffect(() => () => onActiveColorChange(null), [onActiveColorChange])
 
@@ -151,67 +214,59 @@ export function ReelsFeed({
     return () => observer.disconnect()
   }, [height, topInset, bottomInset, reels.length])
 
-  const commit = useCallback(
-    (offset: number, velocity: number, elapsed: number) => {
-      const distance = Math.abs(offset)
-      const direction = offset < 0 ? 1 : -1
-      const quick = elapsed < LONG_SWIPE_MS || Math.abs(velocity) > FLING_VELOCITY
+  /**
+   * The whole rule. A fast release is scanning, so page; anything slower or
+   * held is placing, so keep the position and simply stop moving.
+   */
+  const decide = useCallback(
+    (velocity: number, dwell: number, distance: number, threshold: number) => {
+      const speed = dwell > HOLD_MS ? 0 : Math.abs(velocity)
+      const scanning = speed > threshold && distance > MIN_FLING_DISTANCE
 
-      if (quick && distance > MIN_FLING_DISTANCE) {
-        const landed = settle(index + direction, velocity)
-        setDecision(
-          landed === index
-            ? { kind: "returned", detail: "no slide that way" }
-            : {
-                kind: "flick",
-                detail: `${Math.round(Math.abs(velocity))} px/s in ${Math.round(elapsed)} ms`,
-              },
-        )
+      if (scanning) {
+        const position = -y.get() / height
+        // Land on the next boundary in the direction of travel.
+        const target =
+          velocity < 0 ? Math.ceil(position + 0.001) : Math.floor(position - 0.001)
+        pageTo(target, velocity)
+        setDecision({ kind: "paged", detail: `${Math.round(speed)} px/s` })
         return
       }
-      if (distance > height * LONG_SWIPE_RATIO) {
-        const landed = settle(index + direction, velocity)
-        setDecision(
-          landed === index
-            ? { kind: "returned", detail: "no slide that way" }
-            : {
-                kind: "distance",
-                detail: `${Math.round((distance / height) * 100)}% of the slide`,
-              },
-        )
-        return
-      }
-      settle(index, velocity)
+
+      glideTo(dwell > HOLD_MS ? 0 : velocity)
       setDecision({
-        kind: "returned",
-        detail: `${Math.round((distance / height) * 100)}% travelled, under half`,
+        kind: "free",
+        detail:
+          dwell > HOLD_MS
+            ? `held ${Math.round(dwell)} ms`
+            : `${Math.round(Math.abs(velocity))} px/s`,
       })
     },
-    [height, index, settle],
+    [glideTo, height, pageTo, y],
   )
 
   const onDragEnd = (_: unknown, info: PanInfo) => {
-    const elapsed = performance.now() - dragStart.current
+    const dwell = performance.now() - lastMoveAt.current
     const offset = info.offset.y
-    const atEdge =
-      (index === 0 && offset > 0) || (index === lastIndex && offset < 0)
+    const atEdge = (index === 0 && offset > 0) || (index === lastIndex && offset < 0)
 
     // Pulled past either end: give the leftover travel to the page.
-    if (atEdge && Math.abs(offset) > MIN_FLING_DISTANCE) {
-      settle(index, 0)
-      setDecision({ kind: "returned", detail: "end of feed, handed to the page" })
+    if (atEdge && Math.abs(offset) > MIN_FLING_DISTANCE && Math.abs(y.get() % height) < 1) {
+      animate(y, clampY(y.get()), { type: "spring", stiffness: 320, damping: 40 })
+      setDecision({ kind: "free", detail: "end of feed, handed to the page" })
       window.scrollBy({ top: -offset, behavior: reducedMotion ? "auto" : "smooth" })
       return
     }
-    commit(offset, info.velocity.y, elapsed)
+    decide(info.velocity.y, dwell, Math.abs(offset), FLING_VELOCITY)
   }
 
-  // Wheel and trackpad: follow the burst, then judge it like a swipe.
+  // Wheel and trackpad: follow the burst, then judge it by the same rule.
   useEffect(() => {
     const node = frameRef.current
     if (!node || !usePager) return
     let accumulated = 0
     let startedAt = 0
+    let lastTickAt = 0
     let timer = 0
 
     const onWheel = (e: WheelEvent) => {
@@ -219,17 +274,21 @@ export function ReelsFeed({
       // At the ends, leave the event alone so the page scrolls natively.
       if ((goingDown && index === lastIndex) || (!goingDown && index === 0)) return
       e.preventDefault()
+      const now = performance.now()
       if (!startedAt) {
-        startedAt = performance.now()
+        startedAt = now
         accumulated = 0
       }
+      lastTickAt = now
       accumulated -= e.deltaY
-      y.set(-index * height + accumulated)
+      y.set(clampY(y.get() - e.deltaY))
       window.clearTimeout(timer)
       timer = window.setTimeout(() => {
-        const elapsed = performance.now() - startedAt
-        const velocity = (accumulated / Math.max(elapsed, 1)) * 1000
-        commit(accumulated, velocity, elapsed)
+        const elapsed = Math.max(lastTickAt - startedAt, 1)
+        const velocity = (accumulated / elapsed) * 1000
+        // Time the finger, or the fingers, spent still before the burst ended.
+        const dwell = performance.now() - lastTickAt
+        decide(velocity, dwell, Math.abs(accumulated), WHEEL_FLING_VELOCITY)
         startedAt = 0
         accumulated = 0
       }, WHEEL_IDLE_MS)
@@ -240,7 +299,8 @@ export function ReelsFeed({
       node.removeEventListener("wheel", onWheel)
       window.clearTimeout(timer)
     }
-  }, [commit, height, index, lastIndex, usePager, y])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decide, height, index, lastIndex, usePager, y])
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     const targets: Record<string, number> = {
@@ -253,7 +313,7 @@ export function ReelsFeed({
     }
     if (!(e.key in targets)) return
     e.preventDefault()
-    if (usePager) settle(targets[e.key])
+    if (usePager) pageTo(targets[e.key])
     else
       frameRef.current
         ?.querySelector(`[data-slide="${Math.max(0, Math.min(targets[e.key], lastIndex))}"]`)
@@ -339,7 +399,11 @@ export function ReelsFeed({
             dragElastic={0.18}
             dragConstraints={{ top: -lastIndex * height, bottom: 0 }}
             onDragStart={() => {
-              dragStart.current = performance.now()
+              lastMoveAt.current = performance.now()
+            }}
+            onDrag={(_, info) => {
+              // Only real travel counts, so resting the finger grows the dwell.
+              if (Math.abs(info.delta.y) > 0.5) lastMoveAt.current = performance.now()
             }}
             onDragEnd={onDragEnd}
           >
@@ -391,9 +455,9 @@ export function ReelsFeed({
           }`}
           style={{ top: topInset }}
         >
-          {decision.kind === "flick" && `flick · ${decision.detail} · advanced`}
-          {decision.kind === "distance" && `drag · ${decision.detail} · advanced`}
-          {decision.kind === "returned" && `drag · ${decision.detail} · returned`}
+          {decision.kind === "paged"
+            ? `scanning · ${decision.detail} · paged`
+            : `placing · ${decision.detail} · position kept`}
         </p>
       )}
 

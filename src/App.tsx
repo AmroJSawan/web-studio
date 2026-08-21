@@ -476,22 +476,22 @@ export default function App() {
           <div className="mx-auto w-full max-w-5xl px-6 pb-8">
             <SectionTitle inkFaint={inkFaint}>snap feed</SectionTitle>
             <h2 className="text-2xl font-semibold tracking-tight">
-              Paced by the gesture, not corrected after it.
+              Snapping that knows when to stay out of the way.
             </h2>
             <p className={`mt-4 max-w-2xl ${inkSoft}`}>
-              CSS scroll snap waits for the scrolling to stop and then pulls to
-              whichever point is nearest, which is what makes it feel like a
-              correction. This feed reads the gesture the way a native pager
-              does. The track follows the finger, and on release the pace
-              decides: a quick flick commits however short it was, a slow drag
-              commits only past halfway and otherwise springs back, and the
-              settling spring inherits the speed your finger left at. The
-              thresholds are the ones Android and Swiper ship, 400 px/s and
-              25px for a fling, 300ms and half a slide for a long swipe, and
-              the reading it took is printed at the top of each slide.
-              Scrolling out at either end still belongs to the page, and if a
-              slide outgrows the screen the pager steps aside for an ordinary
-              scroller.
+              CSS scroll snap answers every gesture the same way: it waits for
+              the scrolling to stop and pulls to whichever point is nearest.
+              That is what makes it feel like a hijack, because placing the
+              feed somewhere on purpose and throwing it to scan are treated as
+              the same event. Here the release decides which of the two it
+              was. Thrown quickly it reads as scanning, so paging engages and
+              the next slide arrives carrying the speed your finger left at.
+              Dragged slowly, or held still before you lift, it reads as
+              placing, so paging switches off and the feed keeps exactly where
+              you put it. Nothing is ever pulled back to where it started: a
+              partial scroll is a position, not a failed page turn, and the
+              feed will rest between two slides for as long as you want it
+              there. The reading each gesture got is printed at the top.
             </p>
           </div>
           {/*
@@ -512,6 +512,7 @@ export default function App() {
                 bottomInset={chrome.safeBottom + (device.navMode === "top" ? 56 : 108)}
                 leftInset={railMode ? chrome.safeLeft + 168 : 0}
                 reducedMotion={flags.reducedMotion}
+                tintEdge={device.touch ? "bottom" : "top"}
                 onActiveColorChange={onReelTint}
               />
             </div>
