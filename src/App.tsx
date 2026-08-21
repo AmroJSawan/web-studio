@@ -4,10 +4,12 @@ import { MotionConfig, motion } from "motion/react"
 import { Badge } from "@/components/ui/badge"
 import { CollisionPopover } from "@/components/collision-popover"
 import { Navbar, type NavItem } from "@/components/navbar"
+import { ReelsFeed, type Reel } from "@/components/reels-feed"
 import { useDevice } from "@/hooks/use-device"
 import { useBrowserChromeTint } from "@/hooks/use-chrome-tint"
 import {
   supportsScrollTimeline,
+  supportsSnapStop,
   useActiveSection,
   useScrollState,
   useStuck,
@@ -53,6 +55,35 @@ const SECTIONS: NavItem[] = [
   { id: "stack", label: "Stack" },
   { id: "float", label: "Float" },
   { id: "signals", label: "Signals" },
+  { id: "reels", label: "Reels" },
+]
+
+const REELS: Reel[] = [
+  {
+    code: "scroll-snap-type: y mandatory",
+    title: "Every rest lands on a slide",
+    body: "The scroller is never allowed to stop between two items, so the feed has no half-states.",
+  },
+  {
+    code: "scroll-snap-align: start",
+    title: "Each slide parks at the top edge",
+    body: "The snap point is the leading edge of the item, which is what makes a full-height slide fill the frame exactly.",
+  },
+  {
+    code: "scroll-snap-stop: always",
+    title: "One flick moves one slide",
+    body: "Without it a hard fling sails past three items. This is the property that separates a reels feel from a normal snap list.",
+  },
+  {
+    code: "overscroll-behavior-y: contain",
+    title: "The page behind stays put",
+    body: "Reaching either end of the feed does not chain the gesture out to the document, and pull-to-refresh stays suppressed.",
+  },
+  {
+    code: "height: measured pixels",
+    title: "No gap under the toolbar",
+    body: "Slides are sized from the live visual viewport rather than 100vh, so a collapsing mobile toolbar cannot leave a strip of the next slide showing.",
+  },
 ]
 
 const STACK_CARDS = [
@@ -91,6 +122,7 @@ export default function App() {
   const glass = supportsBackdropFilter && !flags.reducedTransparency
   const railMode = device.navMode === "rail"
   const webkit = ENGINE === "WebKit"
+  const reelHeight = Math.max(360, Math.min(Math.round(chrome.visualHeight * 0.68), 560))
 
   // Paints the scene colour onto the root so the browser chrome can match it.
   useBrowserChromeTint(palette.base, lightUi ? "light" : "dark")
@@ -168,6 +200,7 @@ export default function App() {
     ["motion", flags.reducedMotion ? "reduced" : "full"],
     ["transparency", glass ? "glass" : "solid fallback"],
     ["scroll timeline", supportsScrollTimeline ? "native css" : "js fallback"],
+    ["snap stop", supportsSnapStop ? "always supported" : "not supported"],
     [
       "network",
       online
@@ -417,6 +450,33 @@ export default function App() {
               inkSoft={inkSoft}
               title="environment"
             />
+          </Section>
+
+          <Section id="reels">
+            <SectionTitle inkFaint={inkFaint}>snap feed</SectionTitle>
+            <Card border={border} surface={surface}>
+              <h2 className="text-2xl font-semibold tracking-tight">
+                One flick, one slide.
+              </h2>
+              <p className={`mt-4 max-w-2xl ${inkSoft}`}>
+                A reels-style feed built on CSS scroll snap alone. Flick it hard:
+                it advances exactly one slide instead of sailing past three, and
+                the page behind it does not move. Each slide names the property
+                doing the work.
+                {!supportsSnapStop &&
+                  " This browser does not support scroll-snap-stop, so a fast fling may cross more than one slide."}
+              </p>
+              <div className="mt-7">
+                <ReelsFeed
+                  reels={REELS}
+                  colors={palette.colors}
+                  height={reelHeight}
+                  reducedMotion={flags.reducedMotion}
+                  lightUi={lightUi}
+                  glass={glass}
+                />
+              </div>
+            </Card>
           </Section>
         </main>
 

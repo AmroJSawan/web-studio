@@ -108,3 +108,10 @@ export function useActiveSection(ids: string[]): string {
 
 export const supportsScrollTimeline =
   typeof CSS !== "undefined" && CSS.supports("animation-timeline", "scroll()")
+
+/**
+ * `scroll-snap-stop: always` is what keeps one flick to one slide. Where it is
+ * missing, snapping still works but a fast fling can cross several items.
+ */
+export const supportsSnapStop =
+  typeof CSS !== "undefined" && CSS.supports("scroll-snap-stop", "always")
