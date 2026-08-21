@@ -1,10 +1,10 @@
-import { useMemo, useState, type ReactNode } from "react"
+import { useCallback, useMemo, useState, type ReactNode } from "react"
 import { MeshGradient } from "@paper-design/shaders-react"
 import { MotionConfig, motion } from "motion/react"
 import { Badge } from "@/components/ui/badge"
 import { CollisionPopover } from "@/components/collision-popover"
 import { Navbar, type NavItem } from "@/components/navbar"
-import { ReelsFeed, type Reel } from "@/components/reels-feed"
+import { ReelsFeed, isDarkColor, type Reel } from "@/components/reels-feed"
 import { useDevice } from "@/hooks/use-device"
 import { useBrowserChromeTint } from "@/hooks/use-chrome-tint"
 import {
@@ -122,10 +122,23 @@ export default function App() {
   const glass = supportsBackdropFilter && !flags.reducedTransparency
   const railMode = device.navMode === "rail"
   const webkit = ENGINE === "WebKit"
-  const reelHeight = Math.max(360, Math.min(Math.round(chrome.visualHeight * 0.68), 560))
+  /*
+   * Sized to 100svh, the height with the mobile toolbar expanded, rather than
+   * the live dynamic height. A slide that resized itself mid-gesture as the
+   * toolbar retracted would move its own snap points while the reader was
+   * still travelling towards them.
+   */
+  const reelHeight = Math.max(360, Math.round(chrome.small))
+  const reelExitRamp = Math.round(reelHeight * 0.35)
+  const [reelTint, setReelTint] = useState<string | null>(null)
+  const onReelTint = useCallback((c: string | null) => setReelTint(c), [])
 
   // Paints the scene colour onto the root so the browser chrome can match it.
-  useBrowserChromeTint(palette.base, lightUi ? "light" : "dark")
+  const chromeTint = reelTint ?? palette.base
+  useBrowserChromeTint(
+    chromeTint,
+    reelTint ? (isDarkColor(reelTint) ? "dark" : "light") : lightUi ? "light" : "dark",
+  )
 
   const ink = lightUi ? "text-slate-900" : "text-white"
   const inkSoft = lightUi ? "text-slate-700" : "text-white/70"
@@ -312,7 +325,7 @@ export default function App() {
 
         {/* The rail occupies the leading edge, so the content yields that space. */}
         <main
-          className="mx-auto w-full max-w-5xl px-6 pb-40"
+          className="mx-auto w-full max-w-5xl px-6 pb-24"
           style={railMode ? { paddingLeft: chrome.safeLeft + 168 } : undefined}
         >
           <Section id="top" first>
@@ -452,33 +465,56 @@ export default function App() {
             />
           </Section>
 
-          <Section id="reels">
-            <SectionTitle inkFaint={inkFaint}>snap feed</SectionTitle>
-            <Card border={border} surface={surface}>
-              <h2 className="text-2xl font-semibold tracking-tight">
-                One flick, one slide.
-              </h2>
-              <p className={`mt-4 max-w-2xl ${inkSoft}`}>
-                A reels-style feed built on CSS scroll snap alone. Flick it hard:
-                it advances exactly one slide instead of sailing past three, and
-                the page behind it does not move. Each slide names the property
-                doing the work.
-                {!supportsSnapStop &&
-                  " This browser does not support scroll-snap-stop, so a fast fling may cross more than one slide."}
-              </p>
-              <div className="mt-7">
-                <ReelsFeed
-                  reels={REELS}
-                  colors={palette.colors}
-                  height={reelHeight}
-                  reducedMotion={flags.reducedMotion}
-                  lightUi={lightUi}
-                  glass={glass}
-                />
-              </div>
-            </Card>
-          </Section>
         </main>
+
+        {/*
+          Full bleed and outside the measured column: the feed runs edge to
+          edge so its slide colour meets the browser chrome directly, with the
+          chrome tinted to the same colour while the feed is on screen.
+        */}
+        <section id="reels" className="relative">
+          <div className="mx-auto w-full max-w-5xl px-6 pb-8">
+            <SectionTitle inkFaint={inkFaint}>snap feed</SectionTitle>
+            <h2 className="text-2xl font-semibold tracking-tight">
+              A feed you can still walk out of.
+            </h2>
+            <p className={`mt-4 max-w-2xl ${inkSoft}`}>
+              Full-screen snap scrolling is native to apps, where the feed is
+              the whole product. Dropped into a web page it turns into
+              scrolljacking: the reader loses the scrollbar, the page length and
+              the way out. This one keeps the pattern and gives back the exits.
+              Containment releases on the first and last slide, so scrolling
+              onward simply leaves. Snapping falls back to proximity if a slide
+              outgrows the screen, which is what happens at 200% zoom, so no
+              line is ever pinned out of reach. Arrow, Page, Home and End all
+              work, and Tab is never trapped.
+              {!supportsSnapStop &&
+                " This browser does not support scroll-snap-stop, so a fast fling may cross more than one slide."}
+            </p>
+          </div>
+          {/*
+            Pinned while it is read. Without this the feed sits at whatever
+            offset the page happens to be at, so a full-screen slide is never
+            actually full screen and the wheel enters a misaligned feed. Sticky
+            parks it against the top edge, and the travel below it is the exit
+            ramp: once the last slide releases containment, that leftover
+            scroll carries the reader out of the feed and on down the page.
+          */}
+          <div style={{ height: reelHeight + reelExitRamp }}>
+            <div className="sticky top-0" style={{ height: reelHeight }}>
+              <ReelsFeed
+                reels={REELS}
+                colors={palette.colors}
+                height={reelHeight}
+                topInset={chrome.safeTop + 72}
+                bottomInset={chrome.safeBottom + (device.navMode === "top" ? 56 : 108)}
+                leftInset={railMode ? chrome.safeLeft + 168 : 0}
+                reducedMotion={flags.reducedMotion}
+                onActiveColorChange={onReelTint}
+              />
+            </div>
+          </div>
+        </section>
 
         {device.navMode !== "top" && (
           <Navbar

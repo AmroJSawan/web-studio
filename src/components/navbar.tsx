@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react"
 import { motion } from "motion/react"
 import type { Device } from "@/hooks/use-device"
 import type { ViewportChrome } from "@/hooks/use-viewport-chrome"
@@ -46,6 +47,22 @@ export function Navbar({
   onSelect,
 }: NavbarProps) {
   const { navMode, touch } = device
+  const listRef = useRef<HTMLUListElement>(null)
+
+  /*
+   * Once the dock has more items than fit, the active one can sit outside the
+   * visible strip. Centre it without scrollIntoView, which would also move the
+   * page underneath.
+   */
+  useEffect(() => {
+    const list = listRef.current
+    const current = list?.querySelector<HTMLElement>('[aria-current="true"]')
+    if (!list || !current || list.scrollWidth <= list.clientWidth) return
+    list.scrollTo({
+      left: current.offsetLeft - (list.clientWidth - current.offsetWidth) / 2,
+      behavior: "smooth",
+    })
+  }, [active, navMode])
 
   const pane = `${lightUi ? "border-slate-900/10" : "border-white/15"} ${
     glass
@@ -160,7 +177,10 @@ export function Navbar({
         aria-hidden
         className={`absolute inset-0 rounded-full border shadow-2xl shadow-black/40 ${pane}`}
       />
-      <ul className="relative flex items-center gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none]">
+      <ul
+        ref={listRef}
+        className="relative flex items-center gap-1 overflow-x-auto overscroll-x-contain [scrollbar-width:none]"
+      >
         {items.map((i) => item(i.id, i.label, false))}
       </ul>
     </motion.nav>
