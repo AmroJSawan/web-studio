@@ -60,31 +60,32 @@ const SECTIONS: NavItem[] = [
 
 const REELS: Reel[] = [
   {
-    code: "scroll-snap-type: y mandatory",
-    title: "Every rest lands on a slide",
-    body: "The scroller is never allowed to stop between two items, so the feed has no half-states.",
+    code: "release velocity · 400 px/s",
+    title: "The throw is what pages it",
+    body: "Above this speed the release reads as scanning and the next slide is fetched. Below it, nothing is fetched at all. The number is Android's own fling threshold.",
   },
   {
-    code: "scroll-snap-align: start",
-    title: "Each slide parks at the top edge",
-    body: "The snap point is the leading edge of the item, which is what makes a full-height slide fill the frame exactly.",
+    code: "velocity window · 100 ms",
+    title: "Only the end of the gesture counts",
+    body: "Speed is measured across the closing moments rather than averaged over the whole drag, so a long slow crawl that finishes in a flick is read as a flick.",
   },
   {
-    code: "scroll-snap-stop: always",
-    title: "One flick moves one slide",
-    body: "Without it a hard fling sails past three items. This is the property that separates a reels feel from a normal snap list.",
+    code: "hold · 120 ms",
+    title: "Rest your finger and the position is yours",
+    body: "A finger that stops before it lifts is placing the feed, not throwing it. The velocity is zeroed and the slide stays exactly where you left it, half way if that is where you want it.",
   },
   {
-    code: "overscroll-behavior-y: contain",
-    title: "The page behind stays put",
-    body: "Reaching either end of the feed does not chain the gesture out to the document, and pull-to-refresh stays suppressed.",
+    code: "projection · rate 0.998",
+    title: "Momentum stops where it would have stopped",
+    body: "A release that is not a throw still carries what was in it. The landing point comes from Apple's projection, the same deceleration a scroll view uses.",
   },
   {
-    code: "height: measured pixels",
-    title: "No gap under the toolbar",
-    body: "Slides are sized from the live visual viewport rather than 100vh, so a collapsing mobile toolbar cannot leave a strip of the next slide showing.",
+    code: "rubber band · c = 0.55",
+    title: "The edge pushes back, then hands over",
+    body: "Resistance grows the further you pull instead of scaling flat. Pull far enough at either end and the travel is passed to the page, which is how you leave.",
   },
 ]
+
 
 const STACK_CARDS = [
   {
@@ -492,6 +493,16 @@ export default function App() {
               partial scroll is a position, not a failed page turn, and the
               feed will rest between two slides for as long as you want it
               there. The reading each gesture got is printed at the top.
+            </p>
+            <p className={`mt-4 max-w-2xl ${inkSoft}`}>
+              The numbers are the platforms' own. Momentum lands where Apple's
+              projection says that velocity would come to rest, the edge
+              resists on Apple's rubber band curve rather than a linear one,
+              and the throw threshold is Android's, which transfers directly
+              because a mobile browser's pixel ratio makes one CSS pixel cover
+              one density-independent pixel. Speed is measured across the
+              closing moments of the gesture rather than averaged over all of
+              it, so a long slow drag that ends in a flick is read as a flick.
             </p>
           </div>
           {/*

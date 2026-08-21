@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { animate, motion, useMotionValue, type PanInfo } from "motion/react"
+import { animate, motion, useMotionValue } from "motion/react"
 
 export interface Reel {
   code: string
@@ -20,26 +20,62 @@ interface ReelsFeedProps {
   onActiveColorChange: (color: string | null) => void
 }
 
-/**
- * Above this release speed the gesture reads as scanning and paging engages.
- * 400 dp/s is Android ViewPager2's MIN_FLING_VELOCITY, and 25 dp its
- * MIN_DISTANCE_FOR_FLING, which keeps a stray twitch from counting.
+/*
+ * Calibration. Where a platform publishes a number, it is used as published;
+ * where one does not exist, it is marked as tuned.
+ *
+ * Android reports its thresholds in dp. On a mobile browser the device pixel
+ * ratio is the display density, so one CSS pixel covers one dp and the values
+ * carry across without conversion.
  */
+
+/** ViewPager2 MIN_FLING_VELOCITY: above this a release reads as a throw. */
 const FLING_VELOCITY = 400
+/** ViewPager2 MIN_DISTANCE_FOR_FLING: keeps a twitch from counting as one. */
 const MIN_FLING_DISTANCE = 25
+/** ViewConfiguration getScaledMaximumFlingVelocity, so one bad sample cannot bolt. */
+const MAX_FLING_VELOCITY = 8000
 /**
- * Wheel deltas are coarser than a finger, so the same number would page on an
- * ordinary trackpad drag. Tuned here rather than taken from a library.
+ * Wheel deltas are coarser than a finger and the touch number would page on an
+ * ordinary trackpad drag. Tuned, with no platform equivalent to borrow.
  */
 const WHEEL_FLING_VELOCITY = 900
 /** A finger resting this long before lifting is placing the feed, not throwing it. */
 const HOLD_MS = 120
+/**
+ * Velocity is measured across the last moments of the gesture, the way
+ * Android's VelocityTracker does, not across the whole drag. A long slow drag
+ * that ends in a flick is a flick, and one that ends at rest is a placement.
+ */
+const VELOCITY_WINDOW_MS = 100
+/**
+ * UIScrollView's normal deceleration rate, 0.2% of velocity shed per
+ * millisecond. Apple's projection from WWDC18's Designing Fluid Interfaces
+ * turns a release velocity into the point momentum would actually reach:
+ * (v / 1000) * rate / (1 - rate), which at 0.998 is v * 0.499 seconds.
+ */
+const DECELERATION_RATE = 0.998
+/** UIScrollView's rubber band constant. */
+const RUBBER_BAND_C = 0.55
+/** Movement before the gesture commits to an axis. */
+const DIRECTION_LOCK_PX = 6
 /** Imperceptible cleanup so a free rest does not sit a few pixels off true. */
 const EDGE_TOLERANCE = 6
-/** Approximates deceleration distance: velocity times this lands where momentum would. */
-const MOMENTUM_SECONDS = 0.325
 /** A wheel or trackpad burst is treated as one gesture once it goes quiet. */
 const WHEEL_IDLE_MS = 90
+
+/** Apple's projection: where this velocity would come to rest on its own. */
+const project = (velocity: number) =>
+  (velocity / 1000) * (DECELERATION_RATE / (1 - DECELERATION_RATE))
+
+/**
+ * Apple's rubber band curve, f(x) = (x * d * c) / (d + c * |x|). Resistance
+ * grows with distance instead of scaling linearly, so the edge feels like it
+ * is pushing back rather than simply moving less.
+ */
+const rubberBand = (overshoot: number, dimension: number) =>
+  (overshoot * dimension * RUBBER_BAND_C) /
+  (dimension + RUBBER_BAND_C * Math.abs(overshoot))
 
 type Decision = { kind: "paged" | "free"; detail: string } | null
 
@@ -98,7 +134,6 @@ export function ReelsFeed({
   const [decision, setDecision] = useState<Decision>(null)
   const [contentOverflows, setContentOverflows] = useState(false)
   const [inView, setInView] = useState(false)
-  const lastMoveAt = useRef(0)
   const lastIndex = reels.length - 1
   const slideColor = (i: number) => colors[i % colors.length]
 
@@ -106,43 +141,52 @@ export function ReelsFeed({
 
   const bounds = { min: -lastIndex * height, max: 0 }
   const clampY = (v: number) => Math.max(bounds.min, Math.min(bounds.max, v))
+  const running = useRef<{ stop: () => void } | null>(null)
+  const stopSettle = () => {
+    running.current?.stop()
+    running.current = null
+  }
 
   /** Paging: land on a slide boundary, carrying the release velocity in. */
   const pageTo = useCallback(
     (target: number, velocity = 0) => {
       const clamped = Math.max(0, Math.min(target, lastIndex))
-      animate(y, -clamped * height, {
+      stopSettle()
+      running.current = animate(y, -clamped * height, {
         type: "spring",
-        stiffness: 320,
-        damping: 38,
+        visualDuration: 0.42,
+        bounce: 0.06,
         velocity,
-        restDelta: 0.5,
       })
       return clamped
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [height, lastIndex, y],
   )
 
   /**
    * Free settle: no snapping. The feed keeps the position it was handed and
-   * spends whatever momentum was actually in the gesture, which for a slow or
-   * held release is none at all.
+   * runs out whatever momentum was actually in the gesture, landing where
+   * Apple's projection says that velocity would have come to rest.
    */
   const glideTo = useCallback(
     (velocity: number) => {
-      let target = clampY(y.get() + velocity * MOMENTUM_SECONDS)
+      const current = y.get()
+      const outOfBounds = current > bounds.max || current < bounds.min
+      let target = clampY(current + project(velocity))
       const nearest = Math.round(target / height) * height
       if (Math.abs(target - nearest) < EDGE_TOLERANCE) target = nearest
-      animate(y, target, {
+      stopSettle()
+      running.current = animate(y, target, {
         type: "spring",
-        stiffness: 220,
-        damping: 42,
+        // A pull past the edge returns briskly; a placement just stops.
+        visualDuration: outOfBounds ? 0.45 : 0.55,
+        bounce: 0,
         velocity,
-        restDelta: 0.5,
       })
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [height, y, bounds.min],
+    [height, y, bounds.min, bounds.max],
   )
 
   // Keep the track aligned when the viewport, and so the slide height, changes.
@@ -245,19 +289,111 @@ export function ReelsFeed({
     [glideTo, height, pageTo, y],
   )
 
-  const onDragEnd = (_: unknown, info: PanInfo) => {
-    const dwell = performance.now() - lastMoveAt.current
-    const offset = info.offset.y
-    const atEdge = (index === 0 && offset > 0) || (index === lastIndex && offset < 0)
+  /*
+   * Pointer handling is done here rather than through Motion's drag, so the
+   * two things this gesture is judged on can be exact: the edge uses Apple's
+   * rubber band curve instead of a linear elasticity, and velocity is measured
+   * over the closing window of the gesture rather than the whole of it.
+   */
+  const pointer = useRef({
+    active: false,
+    id: -1,
+    startClientX: 0,
+    startClientY: 0,
+    startY: 0,
+    axis: null as null | "y",
+    samples: [] as { t: number; y: number }[],
+  })
 
-    // Pulled past either end: give the leftover travel to the page.
-    if (atEdge && Math.abs(offset) > MIN_FLING_DISTANCE && Math.abs(y.get() % height) < 1) {
-      animate(y, clampY(y.get()), { type: "spring", stiffness: 320, damping: 40 })
+  const positionFor = (raw: number) => {
+    if (raw > bounds.max) return bounds.max + rubberBand(raw - bounds.max, height)
+    if (raw < bounds.min) return bounds.min + rubberBand(raw - bounds.min, height)
+    return raw
+  }
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (!usePager || !e.isPrimary) return
+    stopSettle()
+    const p = pointer.current
+    p.active = true
+    p.id = e.pointerId
+    p.startClientX = e.clientX
+    p.startClientY = e.clientY
+    p.startY = y.get()
+    p.axis = null
+    p.samples = [{ t: performance.now(), y: y.get() }]
+  }
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const p = pointer.current
+    if (!p.active || e.pointerId !== p.id) return
+    const dy = e.clientY - p.startClientY
+    const dx = e.clientX - p.startClientX
+
+    // Commit to an axis once there is enough movement to tell them apart.
+    if (!p.axis) {
+      if (Math.abs(dy) < DIRECTION_LOCK_PX && Math.abs(dx) < DIRECTION_LOCK_PX) return
+      if (Math.abs(dx) > Math.abs(dy)) {
+        p.active = false // a sideways gesture is not ours
+        return
+      }
+      p.axis = "y"
+      e.currentTarget.setPointerCapture(e.pointerId)
+    }
+
+    y.set(positionFor(p.startY + dy))
+    const t = performance.now()
+    p.samples.push({ t, y: y.get() })
+    while (p.samples.length > 2 && t - p.samples[0].t > VELOCITY_WINDOW_MS) {
+      p.samples.shift()
+    }
+  }
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    const p = pointer.current
+    if (!p.active || e.pointerId !== p.id) return
+    p.active = false
+    if (!p.axis) return
+
+    const now = performance.now()
+    const recent = p.samples.filter((sample) => now - sample.t <= VELOCITY_WINDOW_MS)
+    const lastMove = p.samples[p.samples.length - 1]?.t ?? now
+    const dwell = now - lastMove
+
+    /*
+     * Normally the closing window holds plenty of samples, since pointers
+     * report at display rate. If a slow gesture left fewer than two inside it,
+     * fall back to the last pair rather than reporting a spurious zero.
+     */
+    const sampleWindow = recent.length >= 2 ? recent : p.samples.slice(-2)
+    let velocity = 0
+    if (sampleWindow.length >= 2) {
+      const first = sampleWindow[0]
+      const span = now - first.t
+      if (span > 0) velocity = ((y.get() - first.y) / span) * 1000
+    }
+    velocity = Math.max(-MAX_FLING_VELOCITY, Math.min(MAX_FLING_VELOCITY, velocity))
+
+    const current = y.get()
+    const overshoot =
+      current > bounds.max
+        ? current - bounds.max
+        : current < bounds.min
+          ? current - bounds.min
+          : 0
+
+    // Pulled past either end: hand the overshoot to the page.
+    if (Math.abs(overshoot) > MIN_FLING_DISTANCE) {
+      glideTo(0)
       setDecision({ kind: "free", detail: "end of feed, handed to the page" })
-      window.scrollBy({ top: -offset, behavior: reducedMotion ? "auto" : "smooth" })
+      window.scrollBy({
+        top: -overshoot,
+        behavior: reducedMotion ? "auto" : "smooth",
+      })
       return
     }
-    decide(info.velocity.y, dwell, Math.abs(offset), FLING_VELOCITY)
+
+    decide(velocity, dwell, Math.abs(y.get() - p.startY), FLING_VELOCITY)
   }
 
   // Wheel and trackpad: follow the burst, then judge it by the same rule.
@@ -388,27 +524,15 @@ export function ReelsFeed({
           aria-roledescription="feed"
           aria-label="Snap feed"
           onKeyDown={onKeyDown}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
           className="h-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-inset"
           // Vertical panning is ours; pinch-zoom stays with the browser.
           style={{ touchAction: "pan-x pinch-zoom" }}
         >
-          <motion.div
-            style={{ y }}
-            drag="y"
-            dragMomentum={false}
-            dragElastic={0.18}
-            dragConstraints={{ top: -lastIndex * height, bottom: 0 }}
-            onDragStart={() => {
-              lastMoveAt.current = performance.now()
-            }}
-            onDrag={(_, info) => {
-              // Only real travel counts, so resting the finger grows the dwell.
-              if (Math.abs(info.delta.y) > 0.5) lastMoveAt.current = performance.now()
-            }}
-            onDragEnd={onDragEnd}
-          >
-            {slides}
-          </motion.div>
+          <motion.div style={{ y }}>{slides}</motion.div>
         </div>
       ) : (
         <div
