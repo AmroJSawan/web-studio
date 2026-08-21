@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { CollisionPopover } from "@/components/collision-popover"
 import { Navbar, type NavItem } from "@/components/navbar"
 import { useDevice } from "@/hooks/use-device"
+import { useBrowserChromeTint } from "@/hooks/use-chrome-tint"
 import {
   supportsScrollTimeline,
   useActiveSection,
@@ -24,18 +25,23 @@ import {
   useViewport,
 } from "@/hooks/use-environment"
 
-type Palette = { name: string; colors: [string, string, string, string] }
+type Palette = {
+  name: string
+  colors: [string, string, string, string]
+  /** The tone the browser chrome and the page root are painted with. */
+  base: string
+}
 
 function paletteFor(hour: number, dark: boolean): Palette {
   if (hour >= 21 || hour < 5)
-    return { name: "night", colors: ["#05060f", "#131a3d", "#1e1b4b", "#0b3b4a"] }
+    return { name: "night", base: "#05060f", colors: ["#05060f", "#131a3d", "#1e1b4b", "#0b3b4a"] }
   if (hour < 8)
-    return { name: "dawn", colors: ["#1b1330", "#7c2d5b", "#c2643f", "#28304d"] }
+    return { name: "dawn", base: "#1b1330", colors: ["#1b1330", "#7c2d5b", "#c2643f", "#28304d"] }
   if (hour < 17)
     return dark
-      ? { name: "day", colors: ["#0b1220", "#123a5c", "#0e7490", "#1e293b"] }
-      : { name: "day", colors: ["#dbeafe", "#93c5fd", "#67e8f9", "#c7d2fe"] }
-  return { name: "dusk", colors: ["#160f2e", "#5b2a86", "#b45309", "#1e1b4b"] }
+      ? { name: "day", base: "#0b1220", colors: ["#0b1220", "#123a5c", "#0e7490", "#1e293b"] }
+      : { name: "day", base: "#dbeafe", colors: ["#dbeafe", "#93c5fd", "#67e8f9", "#c7d2fe"] }
+  return { name: "dusk", base: "#160f2e", colors: ["#160f2e", "#5b2a86", "#b45309", "#1e1b4b"] }
 }
 
 const ENGINE = engineName()
@@ -84,6 +90,10 @@ export default function App() {
   const lightUi = !flags.darkScheme && palette.name === "day"
   const glass = supportsBackdropFilter && !flags.reducedTransparency
   const railMode = device.navMode === "rail"
+  const webkit = ENGINE === "WebKit"
+
+  // Paints the scene colour onto the root so the browser chrome can match it.
+  useBrowserChromeTint(palette.base, lightUi ? "light" : "dark")
 
   const ink = lightUi ? "text-slate-900" : "text-white"
   const inkSoft = lightUi ? "text-slate-700" : "text-white/70"
@@ -195,22 +205,38 @@ export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <div className={`relative ${ink}`}>
-        <MeshGradient
-          className="fixed inset-0 -z-10 h-full w-full"
-          colors={palette.colors}
-          speed={flags.reducedMotion ? 0 : 0.4}
-        />
+        <div
+          aria-hidden
+          className="fixed inset-0 -z-10"
+          style={{ backgroundColor: palette.base }}
+        >
+          <MeshGradient
+            className="h-full w-full"
+            colors={palette.colors}
+            speed={flags.reducedMotion ? 0 : 0.4}
+          />
+        </div>
 
         <div ref={sentinelRef} aria-hidden className="absolute top-0 h-px w-full" />
 
         <header
-          className={`sticky top-0 z-40 border-b transition-all duration-300 ${
-            stuck ? `${border} ${surface}` : "border-transparent"
-          }`}
+          className="sticky top-0 z-40"
           style={{ paddingTop: chrome.safeTop }}
         >
+          {/*
+            Glass on an absolute child, not on the sticky box. Safari samples
+            background-color and backdrop-filter from sticky elements at the
+            viewport edge to tint its floating toolbar, and a translucent
+            white header would bleach it.
+          */}
+          <span
+            aria-hidden
+            className={`absolute inset-0 border-b transition-opacity duration-300 ${border} ${surface} ${
+              stuck ? "opacity-100" : "opacity-0"
+            }`}
+          />
           <div
-            className={`mx-auto flex w-full max-w-5xl items-center justify-between px-6 transition-all duration-300 ${
+            className={`relative mx-auto flex w-full max-w-5xl items-center justify-between px-6 transition-all duration-300 ${
               stuck ? "py-2.5" : "py-5"
             }`}
           >
@@ -230,6 +256,7 @@ export default function App() {
                 chrome={chrome}
                 glass={glass}
                 lightUi={lightUi}
+                webkit={webkit}
                 onSelect={goToSection}
               />
             )}
@@ -237,7 +264,7 @@ export default function App() {
               {stuck ? `${Math.round(scroll.progress * 100)}%` : device.kind}
             </span>
           </div>
-          <div className={`h-px w-full ${lightUi ? "bg-slate-900/10" : "bg-white/10"}`}>
+          <div className={`relative h-px w-full ${lightUi ? "bg-slate-900/10" : "bg-white/10"}`}>
             <div
               className="scroll-progress-bar h-px w-full origin-left"
               style={{
@@ -402,6 +429,7 @@ export default function App() {
             chrome={chrome}
             glass={glass}
             lightUi={lightUi}
+            webkit={webkit}
             onSelect={goToSection}
           />
         )}
